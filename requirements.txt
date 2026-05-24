@@ -1,0 +1,8 @@
+streamlit
+pandas
+openpyxl
+transformers
+torch
+python-dotenv
+pillow
+pdfplumber
