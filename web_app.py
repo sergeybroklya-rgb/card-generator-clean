@@ -4,6 +4,7 @@ import io
 import os
 import tempfile
 from card_generator import process_product
+from conversion_predictor import predict_conversion
 from auth import register_user, login_user, can_generate, increment_generations, save_history, get_history, get_all_users, activate_subscription
 
 st.set_page_config(page_title="Генератор карточек товаров", page_icon="📦", layout="wide")
@@ -29,6 +30,44 @@ st.markdown("""
     .stRadio > div { gap: 1rem; flex-wrap: wrap; }
     .stRadio label { background: #0f172a !important; padding: 0.5rem 1rem !important; border-radius: 30px !important; border: 1px solid #334155 !important; }
     .stRadio [role="radiogroup"] { gap: 0.5rem; flex-wrap: wrap; }
+    
+    /* Стили для прогноза конверсии */
+    .prediction-card {
+        background: #0f172a;
+        border-radius: 20px;
+        padding: 1.5rem;
+        margin-top: 1rem;
+        border: 1px solid #334155;
+    }
+    .prediction-score {
+        font-size: 3rem;
+        font-weight: bold;
+        text-align: center;
+    }
+    .prediction-level-high {
+        background: #064e3b;
+        border-left: 5px solid #10b981;
+        padding: 0.75rem;
+        border-radius: 12px;
+    }
+    .prediction-level-medium {
+        background: #713f12;
+        border-left: 5px solid #eab308;
+        padding: 0.75rem;
+        border-radius: 12px;
+    }
+    .prediction-level-low {
+        background: #7f1d1d;
+        border-left: 5px solid #ef4444;
+        padding: 0.75rem;
+        border-radius: 12px;
+    }
+    .recommendation-good {
+        color: #10b981;
+    }
+    .recommendation-bad {
+        color: #ef4444;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -120,6 +159,7 @@ else:
             <div class="step"><div class="step-number">5</div><div><strong>Выберите маркетплейс</strong></div></div>
             <div class="step"><div class="step-number">6</div><div><strong>Выберите нишу</strong> (можно свернуть блок)</div></div>
             <div class="step"><div class="step-number">7</div><div><strong>Нажмите «Сгенерировать»</strong></div></div>
+            <div class="step"><div class="step-number">8</div><div><strong>Получите прогноз конверсии</strong> и рекомендации</div></div>
             """, unsafe_allow_html=True)
         
         col1, col2 = st.columns([1, 3])
@@ -146,9 +186,9 @@ else:
         marketplace_map = {"Wildberries": "wildberries", "Ozon": "ozon", "Яндекс Маркет": "yandex"}
         marketplace = marketplace_map[marketplace_display]
         
-        # ========== ВЫБОР НИШИ (РАСШИРЕННЫЙ, СВОРАЧИВАЕМЫЙ) ==========
+        # ========== ВЫБОР НИШИ ==========
         with st.expander("🏷️ Выберите нишу товара (нажмите, чтобы развернуть/свернуть)"):
-            st.markdown("Выберите категорию товара для более точной генерации описания")
+            st.markdown("Выберите категорию товара для более точной генерации описания и прогноза конверсии")
             niche_display = st.radio(
                 "Категория",
                 options=[
@@ -191,7 +231,7 @@ else:
                     st.error("❌ Нет колонки product_name")
                 else:
                     st.success(f"✅ Загружено {len(df)} товаров")
-                    if st.button("🚀 Сгенерировать карточки"):
+                    if st.button("🚀 Сгенерировать карточки", type="primary"):
                         progress_bar = st.progress(0)
                         status = st.empty()
                         new_cols = ['generated_title', 'generated_description_1', 'generated_description_2',
@@ -199,6 +239,10 @@ else:
                         for col in new_cols:
                             if col not in df.columns:
                                 df[col] = ""
+                        
+                        # Сохраняем результаты для прогноза
+                        prediction_results = []
+                        
                         total = len(df)
                         for i, row in df.iterrows():
                             status.text(f"🔄 {i+1}/{total}: {row['product_name']}")
@@ -206,18 +250,98 @@ else:
                                 result = process_product(row.to_dict(), tone=tone, marketplace=marketplace, niche=niche_display)
                                 for col, val in result.items():
                                     df.at[i, col] = val
+                                
+                                # Прогноз конверсии для сгенерированной карточки
+                                if niche_display != "default":
+                                    pred = predict_conversion(
+                                        result['generated_title'],
+                                        result['generated_description_1'],
+                                        row.get('price', 0),
+                                        niche_display
+                                    )
+                                    prediction_results.append(pred)
+                                else:
+                                    # Для универсальной ниши используем "sneakers" как базовую
+                                    pred = predict_conversion(
+                                        result['generated_title'],
+                                        result['generated_description_1'],
+                                        row.get('price', 0),
+                                        "sneakers"
+                                    )
+                                    prediction_results.append(pred)
                             except Exception as e:
                                 st.warning(f"Ошибка: {e}")
+                                prediction_results.append(None)
                             progress_bar.progress((i+1)/total)
+                        
                         status.text("✅ Готово!")
+                        
+                        # Сохраняем результат
                         output = io.BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
                             df.to_excel(writer, index=False)
+                        
                         increment_generations(st.session_state.user['id'])
                         save_history(st.session_state.user['id'], uploaded_file.name, len(df), "")
-                        st.download_button("📥 Скачать результат", data=output.getvalue(), file_name="products_cards.xlsx")
+                        
+                        # Показываем результаты
+                        st.download_button("📥 Скачать результат (Excel)", data=output.getvalue(), file_name="products_cards.xlsx")
+                        
+                        # Показываем прогнозы конверсии
+                        st.markdown("---")
+                        st.markdown("## 📊 Прогноз конверсии карточек")
+                        
+                        for i, (_, row) in enumerate(df.iterrows()):
+                            pred = prediction_results[i] if i < len(prediction_results) else None
+                            if pred:
+                                score = pred['score']
+                                level = pred['level']
+                                level_desc = pred['level_desc']
+                                
+                                # Определяем цветовую метку уровня
+                                if score >= 80:
+                                    level_class = "prediction-level-high"
+                                    score_color = "#10b981"
+                                elif score >= 60:
+                                    level_class = "prediction-level-medium"
+                                    score_color = "#eab308"
+                                else:
+                                    level_class = "prediction-level-low"
+                                    score_color = "#ef4444"
+                                
+                                with st.expander(f"📈 {row['product_name']} — Оценка {score}/100 ({level})", expanded=(i==0)):
+                                    st.markdown(f"""
+                                    <div class="prediction-card">
+                                        <div style="display: flex; align-items: center; gap: 2rem; flex-wrap: wrap;">
+                                            <div style="text-align: center;">
+                                                <div class="prediction-score" style="color: {score_color};">{score}<span style="font-size: 1rem;">/100</span></div>
+                                                <div class="{level_class}">{level_desc}</div>
+                                            </div>
+                                            <div style="flex: 1;">
+                                                <h4>📋 Рекомендации по улучшению:</h4>
+                                                <ul>
+                                    """, unsafe_allow_html=True)
+                                    
+                                    for rec in pred['recommendations']:
+                                        if rec.startswith("✅"):
+                                            st.markdown(f'<li class="recommendation-good">{rec}</li>', unsafe_allow_html=True)
+                                        elif rec.startswith("❌"):
+                                            st.markdown(f'<li class="recommendation-bad">{rec}</li>', unsafe_allow_html=True)
+                                        else:
+                                            st.markdown(f"<li>{rec}</li>", unsafe_allow_html=True)
+                                    
+                                    st.markdown("""
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                            else:
+                                st.info(f"📄 {row['product_name']} — прогноз временно недоступен")
+                        
                         st.balloons()
-                        st.success("🎉 Готово!")
+                        st.success("🎉 Готово! Карточки сгенерированы, прогнозы конверсии рассчитаны.")
+                        
             except Exception as e:
                 st.error(f"❌ Ошибка: {e}")
     
